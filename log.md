@@ -37,3 +37,15 @@ grep "^## \[" log.md | tail -5      # recent activity
 - **Cleanup:** all pages above carry `status: example`. Remove with
   `grep -rl "^status: example" wiki/ raw/ | xargs git rm` once the first real source
   is ingested.
+
+## [2026-09-10] schema | Added lifecycle stage convention
+
+- Human confirmed scope: all four areas — sales, onboarding, delivery, internal ops —
+  and that sources will be existing documents.
+- Added `stage:` frontmatter field for SOPs (`sales | onboarding | delivery | internal`)
+  with a handoff table in `CLAUDE.md` §3. SOPs must name the SOP they hand off to and
+  the one that hands off to them; gaps between stages are a standing lint item.
+- Restructured the SOPs section of `index.md` by stage.
+- Added `raw/inbox/WHAT-TO-DROP.md` — prioritised source-gathering checklist by stage.
+- Tagged [[sop-onboard-new-client]] as `stage: onboarding`.
+- No operational claims added. Nothing here asserts anything about the business.

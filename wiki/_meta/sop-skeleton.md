@@ -2,6 +2,7 @@
 title: <Verb the Noun>
 type: sop
 status: draft
+stage: delivery   # sales | onboarding | delivery | internal
 owner: "[[<role>]]"
 last_reviewed: YYYY-MM-DD
 review_cycle: quarterly

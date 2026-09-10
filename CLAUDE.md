@@ -90,6 +90,7 @@ in bold, then the body.
 title: Onboard a New Client
 type: sop            # sop | service | role | client | tool | policy | concept | decision | source | query
 status: active       # draft | active | needs-review | deprecated | example
+stage: onboarding    # sales | onboarding | delivery | internal — SOPs only
 owner: "[[account-manager]]"
 last_reviewed: 2026-09-10
 review_cycle: quarterly    # quarterly | semiannual | annual | none
@@ -97,6 +98,20 @@ sources: ["[[src-q3-onboarding-retro]]"]
 tags: [onboarding, delivery]
 ---
 ```
+
+`stage` applies to SOPs only. It places a procedure in the business lifecycle so the
+chain from lead to renewal stays visible even as the SOP count grows:
+
+| Stage | Covers | Hands off to |
+|---|---|---|
+| `sales` | Lead to signed contract: qualification, proposals, pricing. | `onboarding` |
+| `onboarding` | Signed contract to first delivered work. | `delivery` |
+| `delivery` | How the work actually gets produced, reviewed, and shipped. | `delivery` (recurring) or renewal |
+| `internal` | Runs alongside the client lifecycle: invoicing, hiring, tooling, reporting. | — |
+
+Every SOP must name the SOP it hands off to, and the one that hands off to it, in its
+**Handoffs** section. Gaps between stages are the most valuable thing this wiki can
+surface — report them in every lint pass.
 
 `status` meanings:
 

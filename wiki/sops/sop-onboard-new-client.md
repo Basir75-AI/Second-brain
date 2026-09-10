@@ -2,6 +2,7 @@
 title: Onboard a New Client
 type: sop
 status: example
+stage: onboarding
 owner: "[[account-manager]]"
 last_reviewed: 2026-09-10
 review_cycle: quarterly

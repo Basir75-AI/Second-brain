@@ -23,9 +23,22 @@ Legend: `●` active · `◐` draft · `⚠` needs review · `✎` example conte
 
 ## SOPs
 
+Organised by lifecycle stage (`CLAUDE.md` §3). The chain runs
+**sales → onboarding → delivery**, with **internal** running alongside.
+
+### Sales
+*No pages yet — lead to signed contract.*
+
+### Onboarding
 | Page | Summary | Owner | Status |
 |---|---|---|---|
 | [[sop-onboard-new-client]] | Take a signed client from contract to first delivered work. | [[account-manager]] | ✎ example |
+
+### Delivery
+*No pages yet — how the work gets produced, reviewed, and shipped.*
+
+### Internal
+*No pages yet — invoicing, hiring, tooling, reporting.*
 
 ## Services
 
