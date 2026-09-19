@@ -22,6 +22,10 @@ from .provider import DataProvider, ProviderError
 from .runner import indicator_overlays, price_analysis, rank, run_strategies, sweep
 
 MAX_BODY = 1_000_000
+# Must stay comfortably above the strategy registry: the UI lets you tick every
+# strategy at once, and a cap below that count rejects the request outright.
+# `test_strategy_cap_covers_the_registry` holds this to the registry's size.
+MAX_STRATEGIES = 24
 
 
 class ApiError(Exception):
@@ -184,8 +188,13 @@ class Handler(BaseHTTPRequestHandler):
         bars, meta = _bars_from(payload)
         config = _config_from(payload)
         specs = payload.get("strategies") or [{"key": "sma_crossover"}]
-        if not isinstance(specs, list) or len(specs) > 12:
-            raise ApiError("'strategies' must be a list of at most 12 entries")
+        if not isinstance(specs, list):
+            raise ApiError("'strategies' must be a list")
+        if len(specs) > MAX_STRATEGIES:
+            raise ApiError(
+                f"'strategies' must be a list of at most {MAX_STRATEGIES} entries; "
+                f"got {len(specs)}"
+            )
         results = run_strategies(
             bars, specs, config, include_benchmark=payload.get("include_benchmark", True)
         )
