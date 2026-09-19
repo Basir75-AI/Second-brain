@@ -17,6 +17,7 @@ from marketlab.datasource import synthetic_bars
 from marketlab.metrics import compute_metrics, max_drawdown, trade_stats
 from marketlab.provider import ProviderError, _parse_bar, _parse_date, _payload_error, load_csv
 from marketlab.runner import rank, run_strategies, sweep
+from marketlab.server import MAX_STRATEGIES
 
 
 def make_bars(closes, opens=None):
@@ -68,10 +69,40 @@ class TestIndicators(unittest.TestCase):
         for series in (ind.sma([1, 2, 3], 3), ind.ema([1, 2, 3], 3), ind.rsi([1, 2, 3], 3)):
             self.assertIsNone(series[0])
 
+    def test_stochastic_places_the_close_in_the_range(self):
+        # Range pinned to 0..10, so %K is just the close times ten.
+        k, d = ind.stochastic([10.0] * 6, [0.0] * 6, [1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 3, 2)
+        self.assertEqual(k[2:], [30.0, 40.0, 50.0, 60.0])
+        self.assertEqual(d[3:], [35.0, 45.0, 55.0])      # SMA(2) of %K
+
+    def test_stochastic_flat_range_reads_neutral(self):
+        k, _ = ind.stochastic([5.0] * 4, [5.0] * 4, [5.0] * 4, 2, 2)
+        self.assertEqual(k[1:], [50.0, 50.0, 50.0])
+
+    def test_keltner_bands_are_atr_wide(self):
+        # Constant bar: high 11, low 9, close 10 -> true range 2, so ATR is 2.
+        mid, upper, lower = ind.keltner([11.0] * 40, [9.0] * 40, [10.0] * 40, 20, 10, 2.0)
+        self.assertAlmostEqual(mid[-1], 10.0)
+        self.assertAlmostEqual(upper[-1], 14.0)
+        self.assertAlmostEqual(lower[-1], 6.0)
+
+    def test_realized_volatility_of_constant_growth_is_zero(self):
+        steady = [100 * (1.01 ** i) for i in range(30)]
+        self.assertAlmostEqual(ind.realized_volatility(steady, 10)[-1], 0.0, places=10)
+
+    def test_realized_volatility_rises_with_noise(self):
+        calm = [100 * (1.001 ** i) for i in range(60)]
+        wild = [100 * (1.05 if i % 2 else 0.96) ** 1 for i in range(60)]
+        self.assertLess(
+            ind.realized_volatility(calm, 20)[-1], ind.realized_volatility(wild, 20)[-1]
+        )
+
     def test_indicators_are_causal(self):
         values = [float(v) for v in (5, 7, 6, 9, 11, 10, 14, 13, 17, 16, 20, 19)]
         for fn in (lambda v: ind.sma(v, 3), lambda v: ind.ema(v, 3),
-                   lambda v: ind.rsi(v, 4), lambda v: ind.rolling_max(v, 3)):
+                   lambda v: ind.rsi(v, 4), lambda v: ind.rolling_max(v, 3),
+                   lambda v: ind.realized_volatility(v, 4),
+                   lambda v: ind.stochastic(v, v, v, 3, 2)[0]):
             full = fn(values)
             for cut in range(5, len(values)):
                 self.assertEqual(fn(values[:cut]), full[:cut], f"{fn} leaked the future")
@@ -163,6 +194,20 @@ class TestEngine(unittest.TestCase):
         self.assertEqual(len(result.trades), 1)
         self.assertEqual(result.trades[0]["exit_date"], self.bars[-1].date.isoformat())
 
+    def test_half_exposure_earns_half_the_move(self):
+        half = run_backtest(self.bars, [0.5] * 4, self.free)
+        full = run_backtest(self.bars, [1.0] * 4, self.free)
+        # The target never changes, so the engine sizes once and holds: half the
+        # position earns exactly half the dollar gain, with no rebalancing drift.
+        self.assertAlmostEqual(
+            half.equity[-1] - 10_000.0, (full.equity[-1] - 10_000.0) / 2, places=6
+        )
+        # Exposure is sized at the fill but marked at the close, so a position
+        # opened at 100 and marked at 110 reads a little above its 0.5 target.
+        # That drift is real, not a rounding artefact.
+        self.assertGreater(half.exposure[1], 0.5)
+        self.assertLess(half.exposure[1], 0.55)
+
     def test_adjusted_fill_stays_on_the_adjusted_scale(self):
         # A 2:1 split: raw close halves, adjusted close does not.
         bars = [
@@ -211,6 +256,56 @@ class TestStrategies(unittest.TestCase):
         with_shorts, _ = strat.get("sma_crossover").generate(self.bars, {"allow_short": True})
         self.assertEqual(min(long_only), 0.0)
         self.assertEqual(min(with_shorts), -1.0)
+
+    def test_vol_target_takes_fractional_positions(self):
+        """The only strategy that sizes below a full position - a distinct path."""
+        targets, _ = strat.get("vol_target").generate(self.bars)
+        fractional = [t for t in targets if 0.0 < t < 1.0]
+        self.assertTrue(fractional, "vol targeting never sized below full exposure")
+        self.assertTrue(all(0.0 <= t <= 1.0 for t in targets))
+
+    def test_vol_target_rebalance_band_reduces_churn(self):
+        wide, _ = strat.get("vol_target").generate(self.bars, {"rebalance_band": 40})
+        tight, _ = strat.get("vol_target").generate(self.bars, {"rebalance_band": 1})
+        changes = lambda s: sum(1 for a, b in zip(s, s[1:]) if a != b)
+        self.assertLess(changes(wide), changes(tight))
+
+    def test_atr_trailing_stop_exits_on_a_drop(self):
+        # Climb steadily to trigger the breakout, then fall off a cliff.
+        closes = [100.0 + i for i in range(60)] + [120.0, 100.0, 80.0]
+        bars = make_bars(closes)
+        targets, _ = strat.get("atr_trailing_stop").generate(
+            bars, {"entry_lookback": 20, "atr_period": 14, "multiplier": 2.0}
+        )
+        self.assertEqual(targets[59], 1.0, "should be long at the top of the climb")
+        self.assertEqual(targets[-1], 0.0, "trailing stop should have closed it")
+
+    def test_rsi_pullback_stays_out_below_the_trend(self):
+        falling = make_bars([200.0 - i for i in range(300)])
+        targets, _ = strat.get("rsi_pullback").generate(falling)
+        self.assertEqual(set(targets), {0.0},
+                         "bought a dip while price was below its trend filter")
+
+    def test_stochastic_reversion_needs_the_turn_up(self):
+        # A straight decline is oversold throughout, but %K never crosses %D,
+        # so nothing should be bought.
+        targets, _ = strat.get("stochastic_reversion").generate(
+            make_bars([300.0 - i for i in range(200)])
+        )
+        self.assertEqual(set(targets), {0.0})
+
+    def test_new_strategies_are_registered(self):
+        for key in ("atr_trailing_stop", "keltner_breakout", "stochastic_reversion",
+                    "vol_target", "rsi_pullback"):
+            self.assertIn(key, strat.REGISTRY)
+
+    def test_strategy_cap_covers_the_registry(self):
+        """The UI can tick every strategy at once; the API must accept that."""
+        self.assertGreaterEqual(
+            MAX_STRATEGIES, len(strat.REGISTRY),
+            "server.MAX_STRATEGIES is below the registry size, so selecting every "
+            "strategy in the UI would be rejected",
+        )
 
     def test_unknown_strategy_raises(self):
         with self.assertRaises(KeyError):

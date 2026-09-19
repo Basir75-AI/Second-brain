@@ -12,7 +12,7 @@ optimiser can sweep a grid without hard-coding anything.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Sequence
+from typing import Callable, Dict, List, Sequence, Tuple
 
 from . import indicators as ind
 from .backtest import Bar
@@ -73,6 +73,28 @@ class Strategy:
 
 def _closes(bars: Sequence[Bar]) -> List[float]:
     return [b.price for b in bars]
+
+
+def _hlc(bars: Sequence[Bar]) -> Tuple[List[float], List[float], List[float]]:
+    """Highs, lows and closes on one consistent scale.
+
+    `Bar.price` is the adjusted close where the feed supplies one, but high and
+    low are always raw. Mixing the two would make a split look like a crash to
+    any range-based indicator, so scale the range by the same factor.
+    """
+    highs: List[float] = []
+    lows: List[float] = []
+    closes: List[float] = []
+    for bar in bars:
+        factor = (
+            bar.adj_close / bar.close
+            if (bar.adj_close is not None and bar.close)
+            else 1.0
+        )
+        highs.append(bar.high * factor)
+        lows.append(bar.low * factor)
+        closes.append(bar.price)
+    return highs, lows, closes
 
 
 def _short_leg(allow_short: bool) -> float:
@@ -265,6 +287,159 @@ def _dual_momentum_filter(bars, p):
     return out
 
 
+
+def _atr_trailing_stop(bars, p):
+    """Break out to an N-bar high, then ride it behind an ATR trailing stop.
+
+    The stop widens when the market is volatile and tightens when it is calm,
+    which is the point: a fixed percentage stop is too tight in a storm and too
+    loose in a drift.
+    """
+    highs, lows, closes = _hlc(bars)
+    ranges = ind.atr(highs, lows, closes, int(p["atr_period"]))
+    breakout = ind.rolling_max(closes, int(p["entry_lookback"]))
+    breakdown = ind.rolling_min(closes, int(p["entry_lookback"]))
+    multiplier = float(p["multiplier"])
+    short = _short_leg(p["allow_short"])
+    out: List[float] = []
+    state = 0.0
+    peak = trough = 0.0
+    for i, close in enumerate(closes):
+        width, high_mark, low_mark = ranges[i], breakout[i], breakdown[i]
+        if width is None or high_mark is None:
+            out.append(0.0)
+            continue
+        if state == 0.0:
+            if close >= high_mark:
+                state, peak = 1.0, close
+            elif short and low_mark is not None and close <= low_mark:
+                state, trough = short, close
+        elif state > 0:
+            peak = max(peak, close)
+            if close < peak - multiplier * width:
+                state = 0.0
+        else:
+            trough = min(trough, close)
+            if close > trough + multiplier * width:
+                state = 0.0
+        out.append(state)
+    return out
+
+
+def _keltner_breakout(bars, p):
+    """Bollinger breakout's cousin, with the band width set by ATR."""
+    highs, lows, closes = _hlc(bars)
+    mid, upper, lower = ind.keltner(
+        highs, lows, closes, int(p["period"]), int(p["atr_period"]), float(p["k"])
+    )
+    short = _short_leg(p["allow_short"])
+    out: List[float] = []
+    state = 0.0
+    for close, m, u, l in zip(closes, mid, upper, lower):
+        if m is None or u is None or l is None:
+            out.append(0.0)
+            continue
+        if state == 0.0:
+            if close > u:
+                state = 1.0
+            elif short and close < l:
+                state = short
+        elif state > 0 and close <= m:
+            state = 0.0
+        elif state < 0 and close >= m:
+            state = 0.0
+        out.append(state)
+    return out
+
+
+def _stochastic_reversion(bars, p):
+    """Buy an oversold stochastic that has already turned up.
+
+    Requiring %K above %D is what stops this buying all the way down: the
+    oscillator has to be low *and* rising.
+    """
+    highs, lows, closes = _hlc(bars)
+    k_line, d_line = ind.stochastic(
+        highs, lows, closes, int(p["k_period"]), int(p["d_period"])
+    )
+    oversold, overbought = float(p["oversold"]), float(p["overbought"])
+    short = _short_leg(p["allow_short"])
+    out: List[float] = []
+    state = 0.0
+    for k, d in zip(k_line, d_line):
+        if k is None or d is None:
+            out.append(0.0)
+            continue
+        if state == 0.0:
+            if k < oversold and k > d:
+                state = 1.0
+            elif short and k > overbought and k < d:
+                state = short
+        elif state > 0 and k > overbought:
+            state = 0.0
+        elif state < 0 and k < oversold:
+            state = 0.0
+        out.append(state)
+    return out
+
+
+def _vol_target(bars, p):
+    """Hold a constant *risk* budget rather than a constant position.
+
+    Exposure is the target volatility divided by what the market is actually
+    doing, so a calm market gets a full position and a violent one gets a
+    fraction. Only the long side, and only above the trend filter. The
+    rebalance band stops it trading every single bar; without one, a
+    continuously varying target is eaten alive by costs.
+
+    Exposure is capped at 1.0 because nothing here models margin or borrowing.
+    """
+    closes = _closes(bars)
+    vol = ind.realized_volatility(closes, int(p["vol_lookback"]))
+    trend = ind.sma(closes, int(p["trend_period"]))
+    target = float(p["target_vol"]) / 100.0
+    cap = float(p["max_exposure"])
+    band = float(p["rebalance_band"]) / 100.0
+    out: List[float] = []
+    state = 0.0
+    for close, v, t in zip(closes, vol, trend):
+        if v is None or t is None or v <= 0 or close <= t:
+            desired = 0.0
+        else:
+            desired = min(cap, target / v)
+        if abs(desired - state) > band:
+            state = desired
+        out.append(state)
+    return out
+
+
+def _rsi_pullback(bars, p):
+    """Buy a short-term dip, but only while the long-term trend is up.
+
+    A plain oversold signal fires just as often in a collapse; the trend filter
+    is what separates a pullback from the start of one.
+    """
+    closes = _closes(bars)
+    strength = ind.rsi(closes, int(p["rsi_period"]))
+    trend = ind.sma(closes, int(p["trend_period"]))
+    exit_line = ind.sma(closes, int(p["exit_ma"]))
+    oversold = float(p["oversold"])
+    out: List[float] = []
+    state = 0.0
+    for close, r, t, e in zip(closes, strength, trend, exit_line):
+        if r is None or t is None or e is None:
+            out.append(0.0)
+            continue
+        if state == 0.0:
+            if close > t and r < oversold:
+                state = 1.0
+        elif close > e or close < t:
+            # Take the bounce, or leave if the trend itself has broken.
+            state = 0.0
+        out.append(state)
+    return out
+
+
 REGISTRY: Dict[str, Strategy] = {}
 
 
@@ -351,6 +526,57 @@ register(Strategy(
     [Param("lookback", "Momentum lookback", 126, minimum=2, maximum=400),
      Param("trend_period", "Trend MA", 200, minimum=5, maximum=400)],
     _dual_momentum_filter,
+))
+
+
+register(Strategy(
+    "atr_trailing_stop", "ATR trailing stop",
+    "Break out to an N-bar high, then ride it behind a stop set by recent volatility.",
+    [Param("entry_lookback", "Entry lookback", 50, minimum=2, maximum=300),
+     Param("atr_period", "ATR period", 14, minimum=2, maximum=100),
+     Param("multiplier", "Stop width (ATR)", 3.0, kind="float",
+           minimum=0.5, maximum=10.0, step=0.5), SHORT_PARAM],
+    _atr_trailing_stop, family="volatility",
+))
+register(Strategy(
+    "keltner_breakout", "Keltner breakout",
+    "Buy a close above an ATR-width channel, exit back at its middle.",
+    [Param("period", "EMA period", 20, minimum=5, maximum=200),
+     Param("atr_period", "ATR period", 10, minimum=2, maximum=100),
+     Param("k", "Band width (ATR)", 2.0, kind="float", minimum=0.5, maximum=5.0, step=0.1),
+     SHORT_PARAM],
+    _keltner_breakout, family="volatility",
+))
+register(Strategy(
+    "stochastic_reversion", "Stochastic reversion",
+    "Buy an oversold stochastic that has already turned up, sell it overbought.",
+    [Param("k_period", "%K period", 14, minimum=2, maximum=100),
+     Param("d_period", "%D smoothing", 3, minimum=1, maximum=30),
+     Param("oversold", "Buy below", 20, minimum=5, maximum=45),
+     Param("overbought", "Sell above", 80, minimum=55, maximum=95), SHORT_PARAM],
+    _stochastic_reversion, family="mean-reversion",
+))
+register(Strategy(
+    "vol_target", "Volatility targeting",
+    "Size the position so risk stays constant: full when calm, a fraction when wild.",
+    [Param("target_vol", "Target vol %", 15.0, kind="float",
+           minimum=2.0, maximum=60.0, step=1.0),
+     Param("vol_lookback", "Vol lookback", 20, minimum=5, maximum=252),
+     Param("trend_period", "Trend MA", 200, minimum=5, maximum=400),
+     Param("max_exposure", "Max exposure", 1.0, kind="float",
+           minimum=0.1, maximum=1.0, step=0.1),
+     Param("rebalance_band", "Rebalance band %", 10.0, kind="float",
+           minimum=1.0, maximum=50.0, step=1.0)],
+    _vol_target, family="risk",
+))
+register(Strategy(
+    "rsi_pullback", "RSI pullback in an uptrend",
+    "Buy a short-term oversold dip, but only while price holds above its long trend.",
+    [Param("rsi_period", "RSI period", 2, minimum=2, maximum=30),
+     Param("oversold", "Buy below", 10, minimum=2, maximum=45),
+     Param("trend_period", "Trend MA", 200, minimum=5, maximum=400),
+     Param("exit_ma", "Exit MA", 5, minimum=2, maximum=100)],
+    _rsi_pullback, family="mean-reversion",
 ))
 
 

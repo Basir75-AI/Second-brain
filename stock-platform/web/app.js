@@ -403,10 +403,6 @@ function renderEquity(payload) {
     })),
     yFormat: (v) => fmtPct(v, 0), ariaLabel: "drawdown per strategy",
   });
-  if (ranked.length > SLOTS) {
-    note("result-warnings",
-      `Charting the top ${SLOTS} of ${ranked.length} strategies — the table below has all of them.`);
-  }
 }
 
 const COLUMNS = [
@@ -469,8 +465,15 @@ function renderTable(payload) {
     `<strong>Assumptions:</strong> ${config.fee_bps} bps commission + ${config.slippage_bps} bps
      slippage per side, fills at ${config.execution.replace("_", " ")}, Sharpe against a
      ${fmtPct(config.rf_annual, 1)} risk-free rate, 252 bars per year.`,
-    ...[...warnings].map((w) => `⚠ ${w}`),
   ];
+  // The palette has a fixed number of slots and is never cycled, so the charts
+  // show the leaders and this table carries the rest.
+  if (payload.ranking.length > SLOTS) {
+    lines.push(`Charting the top ${SLOTS} of ${payload.ranking.length} strategies by
+      ${$("rank").selectedOptions[0].textContent.toLowerCase()} — every one of them is in
+      the table below, and the coloured squares mark the charted ones.`);
+  }
+  lines.push(...[...warnings].map((w) => `⚠ ${w}`));
   note("result-warnings", lines.join("<br>"));
   renderTrades(payload, payload.ranking[0].strategy);
 }

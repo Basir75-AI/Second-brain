@@ -107,7 +107,7 @@ trailing 1/3/6/12-month returns, 52-week range, annualised volatility, current a
 drawdown. A price chart with moving averages and a Bollinger band. These are
 descriptive statistics of past prices, not forecasts.
 
-**Backtesting.** Eleven strategies, all runnable head to head on the same bars with the
+**Backtesting.** Sixteen strategies, all runnable head to head on the same bars with the
 same cost model, always against buy-and-hold:
 
 | Key | What it does |
@@ -123,8 +123,16 @@ same cost model, always against buy-and-hold:
 | `donchian` | Buy an N-bar high, exit on an M-bar low. |
 | `momentum` | Long while the trailing N-bar return clears a threshold. |
 | `dual_momentum_filter` | Momentum, but only above a long trend filter. |
+| `atr_trailing_stop` | Break out to an N-bar high, then ride it behind an ATR-width trailing stop. |
+| `keltner_breakout` | Buy through an ATR-width channel, exit at its middle. |
+| `stochastic_reversion` | Buy an oversold stochastic that has already turned up. |
+| `vol_target` | Size the position so risk stays constant — full when calm, a fraction when wild. |
+| `rsi_pullback` | Buy a short-term dip, but only while the long trend holds. |
 
-Most take an `allow_short` flag.
+Most take an `allow_short` flag. `vol_target` is the only one that sizes below a full
+position; its exposure is capped at 1.0 because nothing here models margin or borrowing,
+and its rebalance band exists to stop a continuously varying target from being eaten
+alive by costs.
 
 **Metrics.** Total return, CAGR, annualised volatility, Sharpe, Sortino, max drawdown,
 Calmar, win rate, profit factor, expectancy, average bars held, time in market, total
@@ -179,14 +187,15 @@ marketlab/
   config.py             settings from the environment / .env
   provider.py           Marketstack client, disk cache, CSV loader   <- the unverified part
   datasource.py         api | csv | demo dispatch
-  indicators.py         SMA, EMA, RSI, MACD, Bollinger, Donchian, ROC, ATR
+  indicators.py         SMA, EMA, RSI, MACD, Bollinger, Keltner, stochastic,
+                        Donchian, ROC, ATR, realised volatility
   strategies.py         the strategy registry
   backtest.py           the engine
   metrics.py            performance statistics
   runner.py             comparison, ranking, parameter sweep
   server.py             stdlib HTTP server + JSON API
 web/                    the UI (hand-built SVG charts, no dependencies)
-tests/                  44 unit tests
+tests/                  56 unit tests
 data/cache/             cached API responses (gitignored)
 ```
 

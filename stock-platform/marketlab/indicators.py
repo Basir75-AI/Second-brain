@@ -178,3 +178,81 @@ def atr(
         current = (current * (period - 1) + true_ranges[i]) / period
         out[i] = current
     return out
+
+
+def stochastic(
+    highs: Sequence[float],
+    lows: Sequence[float],
+    closes: Sequence[float],
+    k_period: int = 14,
+    d_period: int = 3,
+) -> Tuple[List[Num], List[Num]]:
+    """Stochastic oscillator: %K and its %D smoothing.
+
+    Where RSI measures the size of gains against losses, %K measures where the
+    close sits inside the recent high-low range - a different question, so the
+    two disagree often enough to be worth testing separately.
+    """
+    highest = rolling_max(highs, k_period)
+    lowest = rolling_min(lows, k_period)
+    k_line: List[Num] = [None] * len(closes)
+    for i, close in enumerate(closes):
+        hi, lo = highest[i], lowest[i]
+        if hi is None or lo is None:
+            continue
+        span = hi - lo
+        # A flat range means every close is equally extreme; 50 is the neutral read.
+        k_line[i] = 50.0 if span == 0 else 100.0 * (close - lo) / span
+
+    start = next((i for i, v in enumerate(k_line) if v is not None), None)
+    d_line: List[Num] = [None] * len(closes)
+    if start is not None:
+        dense = [v for v in k_line[start:] if v is not None]
+        for offset, value in enumerate(sma(dense, d_period)):
+            d_line[start + offset] = value
+    return k_line, d_line
+
+
+def keltner(
+    highs: Sequence[float],
+    lows: Sequence[float],
+    closes: Sequence[float],
+    period: int = 20,
+    atr_period: int = 10,
+    k: float = 2.0,
+) -> Tuple[List[Num], List[Num], List[Num]]:
+    """Keltner channel: an EMA with bands set by ATR.
+
+    Same shape as a Bollinger band but the width comes from true range rather
+    than standard deviation, so gaps widen it and a quiet drift does not.
+    """
+    mid = ema(closes, period)
+    width = atr(highs, lows, closes, atr_period)
+    upper: List[Num] = [None] * len(closes)
+    lower: List[Num] = [None] * len(closes)
+    for i, (m, w) in enumerate(zip(mid, width)):
+        if m is not None and w is not None:
+            upper[i] = m + k * w
+            lower[i] = m - k * w
+    return mid, upper, lower
+
+
+def realized_volatility(
+    values: Sequence[float], period: int, periods_per_year: int = 252
+) -> List[Num]:
+    """Annualised standard deviation of returns over a rolling window."""
+    returns: List[Num] = [None]
+    for i in range(1, len(values)):
+        prev = values[i - 1]
+        returns.append(values[i] / prev - 1.0 if prev else None)
+
+    out: List[Num] = [None] * len(values)
+    scale = periods_per_year ** 0.5
+    for i in range(period, len(values)):
+        window = [r for r in returns[i - period + 1 : i + 1] if r is not None]
+        if len(window) < period:
+            continue
+        mean = sum(window) / len(window)
+        var = sum((r - mean) ** 2 for r in window) / (len(window) - 1)
+        out[i] = (var ** 0.5) * scale
+    return out
