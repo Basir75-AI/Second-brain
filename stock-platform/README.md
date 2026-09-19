@@ -93,6 +93,11 @@ Every command takes `--fee-bps`, `--slippage-bps`, `--execution`, `--cash`, `--r
 python3 -m unittest discover -s tests -v
 ```
 
+GitHub Actions runs the same suite on Python 3.9 through 3.13, plus a smoke job
+that drives the CLI and the HTTP server on synthetic data — see
+`.github/workflows/tests.yml`. It only fires when something under
+`stock-platform/` changes, so wiki edits don't trigger it.
+
 ---
 
 ## What it does

@@ -1,0 +1,89 @@
+name: tests
+
+# Only the stock-platform app has tests, so scope the workflow to it: wiki-only
+# changes do not need a check.
+on:
+  push:
+    paths:
+      - 'stock-platform/**'
+      - '.github/workflows/tests.yml'
+  pull_request:
+    paths:
+      - 'stock-platform/**'
+      - '.github/workflows/tests.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unittest:
+    name: unittest · py${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # marketlab is standard library only, so there is nothing to install
+        # and every supported interpreter is cheap to cover.
+        python-version: ['3.9', '3.10', '3.11', '3.12', '3.13']
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Run the test suite
+        working-directory: stock-platform
+        run: python -m unittest discover -s tests -v
+
+  smoke:
+    name: cli and server smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # The unit tests never import cli.py or server.py. These steps do, and
+      # they run entirely on seeded synthetic data: no API key, no network.
+      - name: CLI on synthetic data
+        working-directory: stock-platform
+        run: |
+          set -euo pipefail
+          python cli.py strategies
+          python cli.py analyze DEMO --source demo --start 2022-01-01
+          python cli.py compare DEMO --source demo --start 2022-01-01
+          python cli.py backtest DEMO --source demo \
+            -s sma_crossover:fast=10,slow=50 -s rsi_reversion --trades 3
+          python cli.py sweep DEMO --source demo -s sma_crossover \
+            -g fast=10,20 -g slow=50,100
+
+      - name: Server answers its own API
+        working-directory: stock-platform
+        run: |
+          set -euo pipefail
+          python cli.py serve --port 8787 &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8787/api/health >/dev/null 2>&1; then
+              break
+            fi
+            sleep 1
+          done
+
+          curl -fsS http://127.0.0.1:8787/api/health
+          curl -fsS http://127.0.0.1:8787/api/strategies >/dev/null
+          curl -fsS 'http://127.0.0.1:8787/api/analysis?source=demo&start=2022-01-01' >/dev/null
+          curl -fsS -X POST http://127.0.0.1:8787/api/backtest \
+            -H 'Content-Type: application/json' \
+            -d '{"source":"demo","start":"2022-01-01","strategies":[{"key":"sma_crossover"}]}' \
+            | python -c 'import json,sys; d=json.load(sys.stdin); assert d["ranking"], "no ranking returned"; print("backtest ok:", len(d["ranking"]), "strategies")'
