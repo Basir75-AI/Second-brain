@@ -1,0 +1,9 @@
+# Secrets - never commit an API key
+.env
+stock-platform/.env
+
+# Cached API responses and local data
+stock-platform/data/cache/
+*.pyc
+__pycache__/
+.DS_Store
