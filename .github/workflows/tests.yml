@@ -2,8 +2,17 @@ name: tests
 
 # Only the stock-platform app has tests, so scope the workflow to it: wiki-only
 # changes do not need a check.
+#
+# `push` is restricted to long-lived branches on purpose. Without that filter a
+# commit on a PR branch fires both `push` and `pull_request`, so every job runs
+# twice and the PR shows two of every check. Branch work is covered by
+# `pull_request`; `push` then only covers what lands on a trunk.
 on:
   push:
+    branches:
+      - main
+      - master
+      - 'claude/llm-wiki-service-sops-canj7l'   # this repo's current default
     paths:
       - 'stock-platform/**'
       - '.github/workflows/tests.yml'
